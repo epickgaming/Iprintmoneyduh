@@ -325,9 +325,14 @@ bool OpenTrade(int s, Signal &sig)
    double lossPerLot = 0.0, rewardPerLot = 0.0, spreadCostPerLot = 0.0;
    if(!OrderCalcProfit(ot, sym, 1.0, entry, sl, lossPerLot))   return false;
    if(!OrderCalcProfit(ot, sym, 1.0, entry, tp, rewardPerLot)) return false;
-   // immediate round-trip spread cost: open at entry, close at the opposite side
+   // immediate round-trip spread cost: open at entry, close at the opposite side.
+   // Must succeed - a silent failure would understate cost and bypass the gate.
    double oppClose = (sig.dir > 0) ? bid : ask;
-   OrderCalcProfit(ot, sym, 1.0, entry, oppClose, spreadCostPerLot);
+   if(!OrderCalcProfit(ot, sym, 1.0, entry, oppClose, spreadCostPerLot))
+   {
+      LogV(sym + ": OrderCalcProfit(spread) failed - cannot price cost, skip.");
+      return false;
+   }
 
    lossPerLot       = MathAbs(lossPerLot);
    spreadCostPerLot = MathAbs(spreadCostPerLot);
