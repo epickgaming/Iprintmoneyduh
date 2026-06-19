@@ -896,7 +896,7 @@ bool NeedRetrain(int s)
    if(!g_sym[s].trained) return true;
    MqlDateTime st;
    TimeToStruct(TimeCurrent(), st);
-   if(st.year != g_sym[s].trainYear || st.month != g_sym[s].trainMonth)
+   if(st.year != g_sym[s].trainYear || st.mon != g_sym[s].trainMonth)
       return true;
    return false;
 }
@@ -906,7 +906,7 @@ void MarkTrained(int s)
    MqlDateTime st;
    TimeToStruct(TimeCurrent(), st);
    g_sym[s].trainYear  = st.year;
-   g_sym[s].trainMonth = st.month;
+   g_sym[s].trainMonth = st.mon;
 }
 
 //==================================================================
