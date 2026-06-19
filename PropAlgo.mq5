@@ -57,7 +57,7 @@ input string  InpSym_DAX    = "GER40_ECN";    // DAX
 
 input group "=== Signal (mean-reversion fade) ==="
 input int     InpMeanPeriod   = 20;    // rolling mean/std window
-input double  InpZEntry       = 2.0;   // |z| threshold to fade
+input double  InpZEntry       = 1.5;   // |z| threshold to fade (lower = more frequent)
 input int     InpATRPeriod    = 14;    // ATR period (stop volatility floor)
 input double  InpStopDevMult  = 1.5;   // stop = StopDevMult * reversion distance...
 input double  InpStopFloorATR = 0.5;   // ...but at least StopFloorATR * ATR
@@ -616,9 +616,18 @@ void OnTick()
       }
    }
 
-   bool isReal = (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL);
+   // Real-account safety NEVER applies in the Strategy Tester (no real money there).
+   bool inTester = (bool)MQLInfoInteger(MQL_TESTER);
+   bool isReal   = (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL) && !inTester;
    bool tradingAllowed = (!isReal || InpAllowReal) && !DailyLockout()
                          && (g_weeklyCount < InpWeeklyCap);
+
+   // make the funnel visible on the chart (tester + live), not just in the Journal
+   Comment("PropAlgo | tradingAllowed=", tradingAllowed,
+           " | eval=", g_cEval, " ER<=gate=", g_cErPass, " |z|sig=", g_cZSig,
+           " | rej rew=", g_cRejReward, " RR=", g_cRejRR, " cost=", g_cRejCost,
+           " lots=", g_cRejLots, " margin=", g_cRejMargin,
+           " | OPENED=", g_cOpened);
 
    // gather this-cycle candidate signals (symbols that just closed a new H1 bar)
    int    candSym[NSYM];
