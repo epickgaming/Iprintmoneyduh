@@ -56,18 +56,19 @@ input string  InpSym_COPPER = "XCUUSD_ECN";   // Copper
 input string  InpSym_DAX    = "GER40_ECN";    // DAX
 
 input group "=== Signal (mean-reversion fade) ==="
-input int     InpMeanPeriod = 20;     // rolling mean/std window
-input double  InpZEntry     = 2.0;    // |z| threshold to fade
-input int     InpATRPeriod  = 14;     // ATR period (stop sizing)
-input double  InpSL_ATR     = 2.0;    // stop distance = SL_ATR * ATR
-input int     InpERPeriod   = 50;     // Kaufman Efficiency Ratio period
-input double  InpERGate     = 0.45;   // trade only when entry-bar ER <= this
-input int     InpTimeStop   = 24;     // time stop (bars) -> exit at market
+input int     InpMeanPeriod   = 20;    // rolling mean/std window
+input double  InpZEntry       = 2.0;   // |z| threshold to fade
+input int     InpATRPeriod    = 14;    // ATR period (stop volatility floor)
+input double  InpStopDevMult  = 1.5;   // stop = StopDevMult * reversion distance...
+input double  InpStopFloorATR = 0.5;   // ...but at least StopFloorATR * ATR
+input int     InpERPeriod     = 50;    // Kaufman Efficiency Ratio period
+input double  InpERGate       = 0.45;  // trade only when entry-bar ER <= this
+input int     InpTimeStop     = 24;    // time stop (bars) -> exit at market
 
 input group "=== Cost / edge gates (LIVE-measured) ==="
 input double  InpCommissionPerLot = 7.0;  // round-trip commission, acct ccy / 1.0 lot
-input double  InpMinRR            = 1.0;   // reward-to-mean must be >= MinRR * risk
-input double  InpMinCostMult      = 3.0;   // reward-to-mean must be >= MinCostMult * round-trip cost
+input double  InpMinRR            = 0.5;   // reward-to-mean must be >= MinRR * risk
+input double  InpMinCostMult      = 2.0;   // reward-to-mean must be >= MinCostMult * round-trip cost
 
 input group "=== Risk / prop-firm limits (HARD) ==="
 input double  InpRiskPct           = 0.005; // risk per trade (0.5%)
@@ -115,6 +116,26 @@ double   g_dayStartEquity = 0.0;
 
 long     g_curWeekKey  = -1;
 int      g_weeklyCount = 0;
+
+// --- diagnostic funnel counters (printed at end of test and daily) ---
+long g_cEval=0, g_cErPass=0, g_cZSig=0;
+long g_cRejReward=0, g_cRejRR=0, g_cRejCost=0, g_cRejLots=0, g_cRejMargin=0;
+long g_cRejCluster=0, g_cRejConcurrent=0, g_cOpened=0;
+
+void PrintFunnel(string tag)
+{
+   Log(tag + " FUNNEL: eval=" + IntegerToString(g_cEval) +
+       " ER<=gate=" + IntegerToString(g_cErPass) +
+       " |z|signals=" + IntegerToString(g_cZSig) +
+       " | rejects: reward<=0=" + IntegerToString(g_cRejReward) +
+       " RR=" + IntegerToString(g_cRejRR) +
+       " cost=" + IntegerToString(g_cRejCost) +
+       " lots=" + IntegerToString(g_cRejLots) +
+       " margin=" + IntegerToString(g_cRejMargin) +
+       " cluster=" + IntegerToString(g_cRejCluster) +
+       " concurrent=" + IntegerToString(g_cRejConcurrent) +
+       " | OPENED=" + IntegerToString(g_cOpened));
+}
 
 //==================================================================
 //  LOGGING
@@ -186,10 +207,12 @@ Signal EvaluateSignal(int s)
    if(CopyLow  (sym, PERIOD_H1, 1, need, l) < need) return sig;
    int n = ArraySize(c);
    int last = n - 1;
+   g_cEval++;
 
    // regime filter (entry-bar ER)
    double er = EfficiencyRatio(c, last, InpERPeriod);
    if(er > InpERGate) return sig;
+   g_cErPass++;
 
    // rolling mean / std over the last InpMeanPeriod closed bars
    double mean = 0.0;
@@ -216,6 +239,7 @@ Signal EvaluateSignal(int s)
    ComputeATR(h, l, c, n, InpATRPeriod, atr);
    double atrNow = atr[last];
    if(atrNow <= 0.0) return sig;
+   g_cZSig++;
 
    sig.valid     = true;
    sig.dir       = dir;
@@ -299,25 +323,20 @@ bool OpenTrade(int s, Signal &sig)
    double bid    = SymbolInfoDouble(sym, SYMBOL_BID);
    if(ask <= 0.0 || bid <= 0.0) return false;
 
-   double slDist = InpSL_ATR * sig.atr;
+   ENUM_ORDER_TYPE ot;
+   double entry;
+   if(sig.dir > 0) { ot = ORDER_TYPE_BUY;  entry = ask; }
+   else            { ot = ORDER_TYPE_SELL; entry = bid; }
+
+   // Bracket in REVERSION units (coherent with the signal):
+   //  TP = the mean; stop = a multiple of the distance we are fading,
+   //  floored at a fraction of ATR so it is never inside the noise.
+   double devDist = MathAbs(sig.meanPrice - entry);              // reward distance
+   double slDist  = MathMax(InpStopDevMult * devDist, InpStopFloorATR * sig.atr);
    if(slDist <= 0.0) return false;
 
-   ENUM_ORDER_TYPE ot;
-   double entry, sl, tp;
-   if(sig.dir > 0)
-   {
-      ot = ORDER_TYPE_BUY;
-      entry = ask;
-      sl    = entry - slDist;
-      tp    = sig.meanPrice;          // reversion target (above entry for a long)
-   }
-   else
-   {
-      ot = ORDER_TYPE_SELL;
-      entry = bid;
-      sl    = entry + slDist;
-      tp    = sig.meanPrice;          // reversion target (below entry for a short)
-   }
+   double sl = (sig.dir > 0) ? entry - slDist : entry + slDist;
+   double tp = sig.meanPrice;
    sl = NormalizeDouble(sl, digits);
    tp = NormalizeDouble(tp, digits);
 
@@ -343,17 +362,20 @@ bool OpenTrade(int s, Signal &sig)
    // --- edge gates (live cost aware) ---
    if(rewardPerLot <= 0.0)
    {
+      g_cRejReward++;
       LogV(sym + ": reversion target not profitable after spread - skip.");
       return false;
    }
    if(rewardPerLot < InpMinRR * lossPerLot)
    {
+      g_cRejRR++;
       LogV(sym + ": reward/risk too low (" +
            DoubleToString(rewardPerLot / lossPerLot, 2) + ") - skip.");
       return false;
    }
    if(rewardPerLot < InpMinCostMult * costPerLot)
    {
+      g_cRejCost++;
       LogV(sym + ": reward eaten by cost (reward=" + DoubleToString(rewardPerLot, 2) +
            " cost=" + DoubleToString(costPerLot, 2) + ") - skip.");
       return false;
@@ -371,6 +393,7 @@ bool OpenTrade(int s, Signal &sig)
    lots = MathFloor(lots / step) * step;
    if(lots < minL)
    {
+      g_cRejLots++;
       LogV(sym + ": risk-sized lots below broker minimum - skip.");
       return false;
    }
@@ -382,6 +405,7 @@ bool OpenTrade(int s, Signal &sig)
    {
       if(margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
       {
+         g_cRejMargin++;
          LogV(sym + ": insufficient free margin - skip.");
          return false;
       }
@@ -401,6 +425,7 @@ bool OpenTrade(int s, Signal &sig)
 
    if(filled)
    {
+      g_cOpened++;
       Log(sym + ": OPEN " + (sig.dir > 0 ? "BUY" : "SELL") +
           " lots=" + DoubleToString(lots, 2) +
           " entry~" + DoubleToString(entry, digits) +
@@ -452,6 +477,7 @@ void UpdateRiskState()
 
    if(st.day != g_curDay)
    {
+      if(g_curDay != -1) PrintFunnel("daily");   // show the funnel each new day
       g_curDay = st.day;
       g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
       LogV("New trading day. Day-start equity=" + DoubleToString(g_dayStartEquity, 2));
@@ -532,6 +558,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   PrintFunnel("FINAL");
    Log("Deinitialized (reason " + IntegerToString(reason) + ").");
 }
 
@@ -612,12 +639,14 @@ void OnTick()
       if(HasOpenPosition(g_sym[s].broker)) continue;
       if(!ConcurrentRiskOK())
       {
+         g_cRejConcurrent++;
          LogV("Concurrent risk cap reached - holding remaining signals.");
          break;
       }
       // correlated-cluster cap: don't stack same-direction correlated bets
       if(CountClusterDir(g_sym[s].cluster, candSig[i].dir) >= InpMaxPerClusterDir)
       {
+         g_cRejCluster++;
          LogV(g_sym[s].broker + ": cluster " + IntegerToString(g_sym[s].cluster) +
               " same-direction cap reached - skip.");
          continue;
