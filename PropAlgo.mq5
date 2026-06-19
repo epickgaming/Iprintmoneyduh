@@ -36,11 +36,11 @@
 //  INPUTS  (broker symbol map + risk + strategy parameters)
 //==================================================================
 input group "=== Broker symbol map (edit to match your broker) ==="
-input string  InpSym_XAU    = "XAUUSD";   // Gold
-input string  InpSym_FTSE   = "UK100";    // FTSE 100
-input string  InpSym_SP     = "US500";    // S&P 500
-input string  InpSym_COPPER = "COPPER";   // Copper
-input string  InpSym_DAX    = "GER40";    // DAX
+input string  InpSym_XAU    = "XAUUSD_ECN";   // Gold
+input string  InpSym_FTSE   = "UK100_ECN";    // FTSE 100
+input string  InpSym_SP     = "US500_ECN";    // S&P 500
+input string  InpSym_COPPER = "COPPER";       // Copper
+input string  InpSym_DAX    = "GER40_ECN";    // DAX
 
 input group "=== Round-trip cost (fraction of price) - RE-MEASURE! ==="
 input double  InpCost_XAU    = 0.0003;     // XAUUSD round-trip cost
