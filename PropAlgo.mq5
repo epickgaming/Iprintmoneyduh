@@ -82,7 +82,7 @@ input group "=== Execution / safety ==="
 input long    InpMagic     = 990515;   // EA magic number
 input int     InpSlippage  = 20;       // max deviation (points)
 input bool    InpAllowReal = false;    // allow trading on a REAL account (safety gate)
-input bool    InpChartSymbolOnly = false; // trade ONLY the chart symbol (auto-on in tester)
+input bool    InpChartSymbolOnly = false; // trade ONLY the chart symbol (else full 5-symbol basket)
 input bool    InpVerboseLog= true;     // verbose logging
 
 //==================================================================
@@ -522,19 +522,17 @@ bool DailyLockout()
 int OnInit()
 {
    bool inTester  = (bool)MQLInfoInteger(MQL_TESTER);
-   bool chartOnly = InpChartSymbolOnly || inTester;
+   bool chartOnly = InpChartSymbolOnly;   // opt-in only; the basket runs in the tester too
 
    for(int s = 0; s < NSYM; s++) { g_sym[s].lastBar = 0; g_sym[s].enabled = false; g_sym[s].broker = ""; }
 
    if(chartOnly)
    {
-      // The MT5 Strategy Tester reliably feeds only the chart symbol, so
-      // multi-symbol baskets do not test correctly. Trade the chart symbol.
+      // Single-symbol mode: trade only the chart symbol.
       g_sym[0].broker  = _Symbol;
       g_sym[0].cluster = 0;
       g_sym[0].enabled = SymbolSelect(_Symbol, true);
-      Log("CHART-ONLY mode: trading '" + _Symbol + "' only " +
-          (inTester ? "(Strategy Tester auto-detected)." : "(InpChartSymbolOnly=true)."));
+      Log("CHART-ONLY mode: trading '" + _Symbol + "' only (InpChartSymbolOnly=true).");
       if(!g_sym[0].enabled)
          Log("ERROR: chart symbol '" + _Symbol + "' not selectable.");
    }
@@ -543,6 +541,7 @@ int OnInit()
       string brokers[NSYM]  = {InpSym_XAU, InpSym_FTSE, InpSym_SP, InpSym_COPPER, InpSym_DAX};
       // correlation clusters: gold=0, equity indices(FTSE,S&P,DAX)=1, copper=2
       int    clusters[NSYM] = {0, 1, 1, 2, 1};
+      int    nEnabled = 0;
       for(int s = 0; s < NSYM; s++)
       {
          g_sym[s].broker  = brokers[s];
@@ -551,10 +550,19 @@ int OnInit()
          g_sym[s].enabled = ok;
          if(!ok)
             Log("ERROR: symbol '" + brokers[s] + "' not found / not selectable. "
-                "This instrument will be SKIPPED. Fix the symbol map.");
+                "This instrument will be SKIPPED. Fix the symbol map / add it to Market Watch.");
          else
+         {
+            nEnabled++;
             LogV("Symbol mapped: " + brokers[s] + " (cluster " + IntegerToString(clusters[s]) + ")");
+         }
       }
+      Log("FULL BASKET mode: " + IntegerToString(nEnabled) + "/" + IntegerToString(NSYM) +
+          " symbols enabled.");
+      if(inTester)
+         Log("TESTER + basket: every mapped symbol must be in Market Watch WITH H1 history. "
+             "Set the tester 'Symbol' to one of the basket symbols. "
+             "(Set InpChartSymbolOnly=true to trade only the chart symbol instead.)");
    }
 
    g_startEquity = AccountInfoDouble(ACCOUNT_EQUITY);
