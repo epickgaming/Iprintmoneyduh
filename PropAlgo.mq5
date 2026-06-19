@@ -82,6 +82,7 @@ input group "=== Execution / safety ==="
 input long    InpMagic     = 990515;   // EA magic number
 input int     InpSlippage  = 20;       // max deviation (points)
 input bool    InpAllowReal = false;    // allow trading on a REAL account (safety gate)
+input bool    InpChartSymbolOnly = false; // trade ONLY the chart symbol (auto-on in tester)
 input bool    InpVerboseLog= true;     // verbose logging
 
 //==================================================================
@@ -121,6 +122,7 @@ int      g_weeklyCount = 0;
 long g_cEval=0, g_cErPass=0, g_cZSig=0;
 long g_cRejReward=0, g_cRejRR=0, g_cRejCost=0, g_cRejLots=0, g_cRejMargin=0;
 long g_cRejCluster=0, g_cRejConcurrent=0, g_cOpened=0;
+bool g_diagDone=false;   // first-tick data-check printed?
 
 void PrintFunnel(string tag)
 {
@@ -519,23 +521,40 @@ bool DailyLockout()
 //==================================================================
 int OnInit()
 {
-   string brokers[NSYM]  = {InpSym_XAU, InpSym_FTSE, InpSym_SP, InpSym_COPPER, InpSym_DAX};
-   // correlation clusters: gold=0, equity indices(FTSE,S&P,DAX)=1, copper=2
-   int    clusters[NSYM] = {0, 1, 1, 2, 1};
+   bool inTester  = (bool)MQLInfoInteger(MQL_TESTER);
+   bool chartOnly = InpChartSymbolOnly || inTester;
 
-   for(int s = 0; s < NSYM; s++)
+   for(int s = 0; s < NSYM; s++) { g_sym[s].lastBar = 0; g_sym[s].enabled = false; g_sym[s].broker = ""; }
+
+   if(chartOnly)
    {
-      g_sym[s].broker  = brokers[s];
-      g_sym[s].cluster = clusters[s];
-      g_sym[s].lastBar = 0;
-
-      bool ok = SymbolSelect(brokers[s], true);
-      g_sym[s].enabled = ok;
-      if(!ok)
-         Log("ERROR: symbol '" + brokers[s] + "' not found / not selectable. "
-             "This instrument will be SKIPPED. Fix the symbol map.");
-      else
-         LogV("Symbol mapped: " + brokers[s] + " (cluster " + IntegerToString(clusters[s]) + ")");
+      // The MT5 Strategy Tester reliably feeds only the chart symbol, so
+      // multi-symbol baskets do not test correctly. Trade the chart symbol.
+      g_sym[0].broker  = _Symbol;
+      g_sym[0].cluster = 0;
+      g_sym[0].enabled = SymbolSelect(_Symbol, true);
+      Log("CHART-ONLY mode: trading '" + _Symbol + "' only " +
+          (inTester ? "(Strategy Tester auto-detected)." : "(InpChartSymbolOnly=true)."));
+      if(!g_sym[0].enabled)
+         Log("ERROR: chart symbol '" + _Symbol + "' not selectable.");
+   }
+   else
+   {
+      string brokers[NSYM]  = {InpSym_XAU, InpSym_FTSE, InpSym_SP, InpSym_COPPER, InpSym_DAX};
+      // correlation clusters: gold=0, equity indices(FTSE,S&P,DAX)=1, copper=2
+      int    clusters[NSYM] = {0, 1, 1, 2, 1};
+      for(int s = 0; s < NSYM; s++)
+      {
+         g_sym[s].broker  = brokers[s];
+         g_sym[s].cluster = clusters[s];
+         bool ok = SymbolSelect(brokers[s], true);
+         g_sym[s].enabled = ok;
+         if(!ok)
+            Log("ERROR: symbol '" + brokers[s] + "' not found / not selectable. "
+                "This instrument will be SKIPPED. Fix the symbol map.");
+         else
+            LogV("Symbol mapped: " + brokers[s] + " (cluster " + IntegerToString(clusters[s]) + ")");
+      }
    }
 
    g_startEquity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -571,6 +590,23 @@ void OnTick()
    ManageTimeStops();          // flatten stale EA positions (risk-reducing)
 
    if(g_halted) return;
+
+   // one-shot data sanity check (always printed) so "no trades" is diagnosable
+   if(!g_diagDone)
+   {
+      g_diagDone = true;
+      for(int s = 0; s < NSYM; s++)
+      {
+         if(!g_sym[s].enabled) continue;
+         double cc[]; ArraySetAsSeries(cc, false);
+         int bars = CopyClose(g_sym[s].broker, PERIOD_H1, 0, 10, cc);
+         int dg   = (int)SymbolInfoInteger(g_sym[s].broker, SYMBOL_DIGITS);
+         Log("DATA CHECK " + g_sym[s].broker +
+             ": H1 bars(CopyClose)=" + IntegerToString(bars) +
+             " bid=" + DoubleToString(SymbolInfoDouble(g_sym[s].broker, SYMBOL_BID), dg) +
+             " ask=" + DoubleToString(SymbolInfoDouble(g_sym[s].broker, SYMBOL_ASK), dg));
+      }
+   }
 
    bool isReal = (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL);
    bool tradingAllowed = (!isReal || InpAllowReal) && !DailyLockout()
